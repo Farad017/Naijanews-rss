@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
+
 """
-Generate a custom RSS 2.0 feed containing newly created Nairaland topics.
+Generate a custom RSS 2.0 feed from Nairaland's MAIN HOMEPAGE ONLY.
 
 The feed contains only:
 - Topic title
 - Topic URL
 
-It reads Nairaland's "New Topics" pages and writes feed.xml.
+IMPORTANT:
+This script does NOT scrape /topics/, forum pages, or individual
+Nairaland sub-pages. It fetches only:
+
+    https://www.nairaland.com/
+
+and extracts topic links displayed on that homepage.
 """
 
 from __future__ import annotations
@@ -20,13 +27,13 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+
 BASE = "https://www.nairaland.com"
-TOPICS_URL = f"{BASE}/topics/"
+HOME_URL = f"{BASE}/"
 OUTPUT = Path("feed.xml")
 
-# Read several newest pages so a busy hour is less likely to miss topics.
-PAGES_TO_FETCH = 3
-MAX_ITEMS = 150
+# Maximum number of homepage topics to place in the RSS feed.
+MAX_ITEMS = 100
 
 HEADERS = {
     "User-Agent": (
@@ -36,44 +43,98 @@ HEADERS = {
 }
 
 
-def is_topic_url(href: str) -> bool:
-    """Return True for Nairaland topic URLs such as /123456/topic-name."""
+def is_homepage_topic_url(href: str) -> bool:
+    """
+    Return True only for Nairaland topic URLs of the form:
+
+        /123456/topic-title
+
+    This deliberately excludes:
+        /topics/
+        /topics/2
+        /politics/
+        /login
+        /register
+        etc.
+    """
+
     try:
-        path = urlparse(href).path.strip("/")
+        parsed = urlparse(href)
+
+        # Only accept links belonging to Nairaland.
+        if parsed.netloc and parsed.netloc.lower() not in {
+            "www.nairaland.com",
+            "nairaland.com",
+        }:
+            return False
+
+        path = parsed.path.strip("/")
+
         parts = path.split("/", 1)
+
+        # A topic URL has exactly:
+        # numeric topic ID + topic slug
         if len(parts) != 2:
             return False
-        return parts[0].isdigit() and bool(parts[1])
+
+        topic_id, slug = parts
+
+        return topic_id.isdigit() and bool(slug)
+
     except Exception:
         return False
 
 
-def get_topics(page_number: int) -> list[tuple[str, str]]:
-    url = TOPICS_URL if page_number == 1 else f"{TOPICS_URL}{page_number}"
-    response = requests.get(url, headers=HEADERS, timeout=30)
+def get_homepage_topics() -> list[tuple[str, str]]:
+    """
+    Fetch ONLY the Nairaland homepage and extract topic links
+    displayed on that page.
+    """
+
+    response = requests.get(
+        HOME_URL,
+        headers=HEADERS,
+        timeout=30,
+    )
+
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
+
     results = []
-    seen = set()
+    seen_urls = set()
 
     for a in soup.find_all("a", href=True):
+
         href = a.get("href", "").strip()
-        if not is_topic_url(href):
+
+        if not is_homepage_topic_url(href):
             continue
 
         title = " ".join(a.stripped_strings)
+
         title = re.sub(r"\s+", " ", title).strip()
+
         title = html.unescape(title)
 
         if not title:
             continue
 
         link = urljoin(BASE, href)
-        if link in seen:
+
+        # Remove query strings/fragments so the RSS URL is clean.
+        parsed_link = urlparse(link)
+
+        link = parsed_link._replace(
+            query="",
+            fragment="",
+        ).geturl()
+
+        if link in seen_urls:
             continue
 
-        seen.add(link)
+        seen_urls.add(link)
+
         results.append((title, link))
 
     return results
@@ -84,24 +145,31 @@ def xml_escape(value: str) -> str:
 
 
 def build_feed(items: list[tuple[str, str]]) -> str:
-    now = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    now = datetime.now(timezone.utc).strftime(
+        "%a, %d %b %Y %H:%M:%S GMT"
+    )
 
     xml_items = []
+
     for title, link in items:
-          xml_items.append(
-                "    <item>\n"
-                f"      <title>{xml_escape(title)}</title>\n"
-                f"      <link>{xml_escape(link)}</link>\n"
-                "    </item>"
-          )
+
+        xml_items.append(
+            "    <item>\n"
+            f"      <title>{xml_escape(title)}</title>\n"
+            f"      <link>{xml_escape(link)}</link>\n"
+            "    </item>"
+        )
 
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<rss version="2.0">\n'
         "  <channel>\n"
-        "    <title>Nairaland - All New Topics</title>\n"
-        f"    <link>{BASE}/topics/</link>\n"
-        "    <description>New topics from across Nairaland.</description>\n"
+        "    <title>Nairaland Homepage - New Topics</title>\n"
+        f"    <link>{HOME_URL}</link>\n"
+        "    <description>"
+        "Topics displayed on the Nairaland homepage."
+        "</description>\n"
         f"    <lastBuildDate>{now}</lastBuildDate>\n"
         + "\n".join(xml_items)
         + "\n  </channel>\n"
@@ -110,29 +178,27 @@ def build_feed(items: list[tuple[str, str]]) -> str:
 
 
 def main() -> None:
-    all_items = []
-    seen_urls = set()
 
-    for page in range(1, PAGES_TO_FETCH + 1):
-        try:
-            items = get_topics(page)
-        except Exception as exc:
-            print(f"Warning: could not fetch page {page}: {exc}")
-            continue
+    items = get_homepage_topics()
 
-        for title, link in items:
-            if link not in seen_urls:
-                seen_urls.add(link)
-                all_items.append((title, link))
+    if not items:
+        raise RuntimeError(
+            "No topic links were found on the Nairaland homepage. "
+            "Refusing to overwrite feed.xml."
+        )
 
-    if not all_items:
-        raise RuntimeError("No Nairaland topics were found; refusing to overwrite feed.xml.")
+    # Keep only the topics displayed on the homepage,
+    # up to our configured maximum.
+    items = items[:MAX_ITEMS]
 
-    # Nairaland's New Topics page is already newest-first.
-    all_items = all_items[:MAX_ITEMS]
+    OUTPUT.write_text(
+        build_feed(items),
+        encoding="utf-8",
+    )
 
-    OUTPUT.write_text(build_feed(all_items), encoding="utf-8")
-    print(f"Wrote {len(all_items)} topics to {OUTPUT}")
+    print(
+        f"Wrote {len(items)} homepage topics to {OUTPUT}"
+    )
 
 
 if __name__ == "__main__":
