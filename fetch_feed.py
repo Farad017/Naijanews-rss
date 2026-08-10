@@ -9,7 +9,9 @@ The feed contains only:
 
 IMPORTANT:
 This script does NOT scrape /topics/, forum pages, or individual
-Nairaland sub-pages. It fetches only:
+Nairaland sub-pages.
+
+It fetches ONLY:
 
     https://www.nairaland.com/
 
@@ -28,13 +30,20 @@ import requests
 from bs4 import BeautifulSoup
 
 
+# ------------------------------------------------------------
+# SETTINGS
+# ------------------------------------------------------------
+
 BASE = "https://www.nairaland.com"
 HOME_URL = f"{BASE}/"
+
+# The generated RSS file
 OUTPUT = Path("feed.xml")
 
-# Maximum number of homepage topics to place in the RSS feed.
+# Maximum number of topics to put in the RSS feed
 MAX_ITEMS = 100
 
+# Identify our request to Nairaland
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (compatible; NairalandRSSBot/1.0; "
@@ -43,25 +52,31 @@ HEADERS = {
 }
 
 
+# ------------------------------------------------------------
+# CHECK WHETHER A LINK IS A NAIRALAND TOPIC
+# ------------------------------------------------------------
+
 def is_homepage_topic_url(href: str) -> bool:
     """
-    Return True only for Nairaland topic URLs of the form:
+    Accept only normal Nairaland topic URLs such as:
 
-        /123456/topic-title
+        /8726006/utme-top-scorer-credits-prep50
 
-    This deliberately excludes:
+    Reject things such as:
+
         /topics/
         /topics/2
         /politics/
         /login
         /register
-        etc.
+
+    Only links belonging to Nairaland are accepted.
     """
 
     try:
         parsed = urlparse(href)
 
-        # Only accept links belonging to Nairaland.
+        # If a domain is explicitly present, it must be Nairaland.
         if parsed.netloc and parsed.netloc.lower() not in {
             "www.nairaland.com",
             "nairaland.com",
@@ -72,8 +87,9 @@ def is_homepage_topic_url(href: str) -> bool:
 
         parts = path.split("/", 1)
 
-        # A topic URL has exactly:
-        # numeric topic ID + topic slug
+        # A topic URL must contain:
+        # 1. Numeric topic ID
+        # 2. Topic slug
         if len(parts) != 2:
             return False
 
@@ -85,10 +101,17 @@ def is_homepage_topic_url(href: str) -> bool:
         return False
 
 
+# ------------------------------------------------------------
+# FETCH ONLY THE NAIRALAND HOMEPAGE
+# ------------------------------------------------------------
+
 def get_homepage_topics() -> list[tuple[str, str]]:
     """
-    Fetch ONLY the Nairaland homepage and extract topic links
-    displayed on that page.
+    Fetch ONLY:
+
+        https://www.nairaland.com/
+
+    and extract topic links that are displayed on that page.
     """
 
     response = requests.get(
@@ -104,25 +127,30 @@ def get_homepage_topics() -> list[tuple[str, str]]:
     results = []
     seen_urls = set()
 
+    # Look at every link on the homepage.
     for a in soup.find_all("a", href=True):
 
         href = a.get("href", "").strip()
 
+        # Ignore anything that isn't a topic link.
         if not is_homepage_topic_url(href):
             continue
 
+        # Get the visible text of the link.
         title = " ".join(a.stripped_strings)
 
         title = re.sub(r"\s+", " ", title).strip()
 
         title = html.unescape(title)
 
+        # Ignore links without a title.
         if not title:
             continue
 
+        # Convert relative URLs to complete URLs.
         link = urljoin(BASE, href)
 
-        # Remove query strings/fragments so the RSS URL is clean.
+        # Remove query strings and fragments.
         parsed_link = urlparse(link)
 
         link = parsed_link._replace(
@@ -130,6 +158,7 @@ def get_homepage_topics() -> list[tuple[str, str]]:
             fragment="",
         ).geturl()
 
+        # Prevent duplicate topics.
         if link in seen_urls:
             continue
 
@@ -140,7 +169,12 @@ def get_homepage_topics() -> list[tuple[str, str]]:
     return results
 
 
+# ------------------------------------------------------------
+# RSS XML
+# ------------------------------------------------------------
+
 def xml_escape(value: str) -> str:
+    """Safely escape text for XML."""
     return html.escape(value, quote=True)
 
 
@@ -154,6 +188,9 @@ def build_feed(items: list[tuple[str, str]]) -> str:
 
     for title, link in items:
 
+        # Each RSS item contains ONLY:
+        # - title
+        # - link
         xml_items.append(
             "    <item>\n"
             f"      <title>{xml_escape(title)}</title>\n"
@@ -165,7 +202,7 @@ def build_feed(items: list[tuple[str, str]]) -> str:
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<rss version="2.0">\n'
         "  <channel>\n"
-        "    <title>Nairaland Homepage - New Topics</title>\n"
+        "    <title>Nairaland Homepage - Topics</title>\n"
         f"    <link>{HOME_URL}</link>\n"
         "    <description>"
         "Topics displayed on the Nairaland homepage."
@@ -177,20 +214,26 @@ def build_feed(items: list[tuple[str, str]]) -> str:
     )
 
 
+# ------------------------------------------------------------
+# MAIN PROGRAM
+# ------------------------------------------------------------
+
 def main() -> None:
 
+    # Fetch topics ONLY from the Nairaland homepage.
     items = get_homepage_topics()
 
+    # If nothing was found, do NOT overwrite the existing feed.
     if not items:
         raise RuntimeError(
             "No topic links were found on the Nairaland homepage. "
             "Refusing to overwrite feed.xml."
         )
 
-    # Keep only the topics displayed on the homepage,
-    # up to our configured maximum.
+    # Keep only the first 100 topics found on the homepage.
     items = items[:MAX_ITEMS]
 
+    # Generate the RSS file.
     OUTPUT.write_text(
         build_feed(items),
         encoding="utf-8",
