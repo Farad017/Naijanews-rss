@@ -88,13 +88,12 @@ def build_feed(items: list[tuple[str, str]]) -> str:
 
     xml_items = []
     for title, link in items:
-        xml_items.append(
-            "    <item>\n"
-            f"      <title>{xml_escape(title)}</title>\n"
-            f"      <link>{xml_escape(link)}</link>\n"
-            f"      <guid isPermaLink=\"true\">{xml_escape(link)}</guid>\n"
-            "    </item>"
-        )
+          xml_items.append(
+                "    <item>\n"
+                f"      <title>{xml_escape(title)}</title>\n"
+                f"      <link>{xml_escape(link)}</link>\n"
+                "    </item>"
+          )
 
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
